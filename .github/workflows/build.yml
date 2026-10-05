@@ -25,6 +25,12 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Download tokenizer asset
+        run: |
+          mkdir -p app/src/main/assets
+          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/grapheme_mtl_merged_expanded_v1.json" -o app/src/main/assets/grapheme_mtl_merged_expanded_v1.json
+          test -s app/src/main/assets/grapheme_mtl_merged_expanded_v1.json
+
       - name: Build Debug APK
         run: gradle assembleDebug
 
