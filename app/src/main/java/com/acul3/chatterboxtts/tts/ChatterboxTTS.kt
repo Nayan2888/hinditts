@@ -133,7 +133,7 @@ class ChatterboxTTS(private val context: Context) {
         for (i in 0 until copyLen) {
             textSeq[1 + i] = rawTokenIds[i]
         }
-        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT.toLong()
+        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT
 
         val textTensor = Tensor.fromBlob(textSeq, longArrayOf(1, Constants.TEXT_SEQ_LEN.toLong()))
 
