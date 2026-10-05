@@ -18,13 +18,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
@@ -82,3 +82,84 @@ jobs:
           name: hinditts-signing-key
           path: .ci-signing/release.jks
           retention-days: 90
+
+
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ExecuTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install executorch==1.1.0 numpy
+
+      - name: Download conditioning PTEs
+        run: |
+          mkdir -p diag
+          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_speech_emb.pte" -o diag/t3_cond_speech_emb.pte
+          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_enc.pte" -o diag/t3_cond_enc.pte
+          cp app/src/main/assets/cond_speech_tokens.bin diag/
+          cp app/src/main/assets/speaker_emb.bin diag/
+          cp app/src/main/assets/emotion_adv.bin diag/
+
+      - name: Validate conditioning inputs
+        run: |
+          python - <<'PY'
+          import numpy as np
+          import torch
+          from executorch.runtime import Runtime
+
+          tokens_i32 = np.fromfile("diag/cond_speech_tokens.bin", dtype=np.int32).reshape(1, 150)
+          spk = np.fromfile("diag/speaker_emb.bin", dtype=np.float32).reshape(1, 256)
+          emo = np.fromfile("diag/emotion_adv.bin", dtype=np.float32).reshape(1, 1, 1)
+
+          rt = Runtime.get()
+          prog = rt.load_program("diag/t3_cond_speech_emb.pte")
+          method = prog.load_method("forward")
+
+          def try_run(name, tensor):
+              try:
+                  out = method.execute([tensor])[0]
+                  print(name, "SUCCESS", "shape=", tuple(out.shape), "dtype=", out.dtype)
+                  return out
+              except Exception as e:
+                  print(name, "FAILED", repr(e))
+                  return None
+
+          out64 = try_run("INT64", torch.from_numpy(tokens_i32.astype(np.int64)))
+          out32 = try_run("INT32", torch.from_numpy(tokens_i32))
+
+          if out64 is None:
+              raise SystemExit("INT64 failed; inspect this job log before changing Android code.")
+
+          cond_prog = rt.load_program("diag/t3_cond_enc.pte")
+          cond_method = cond_prog.load_method("forward")
+          try:
+              result = cond_method.execute([
+                  torch.from_numpy(spk),
+                  out64,
+                  torch.from_numpy(emo),
+              ])[0]
+          except Exception as e:
+              print("COND_ENC FAILED", repr(e))
+              raise
+
+          print("COND_ENC SUCCESS", "shape=", tuple(result.shape), "dtype=", result.dtype)
+          arr = result.numpy() if hasattr(result, "numpy") else np.asarray(result)
+          np.asarray(arr, dtype=np.float32).tofile("diag/cond_emb.bin")
+          print("WROTE diag/cond_emb.bin", arr.shape, "bytes=", arr.size * 4)
+          PY
+
+      - name: Upload conditioning diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: cond-diagnostic
+          path: diag/cond_emb.bin
+          retention-days: 7
