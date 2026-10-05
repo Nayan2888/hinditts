@@ -127,20 +127,21 @@ class ChatterboxTTS(private val context: Context) {
 
         // Pad/truncate to exactly 256 positions, then wrap with SOT=255 and EOT=0
         // Total: 1 SOT + 256 tokens + 1 EOT = 258
-        val textSeq = IntArray(Constants.TEXT_SEQ_LEN) { 0 }  // default padding = EOT
-        textSeq[0] = Constants.SOT_TEXT
+        val textSeq = LongArray(Constants.TEXT_SEQ_LEN) { 0L }  // default padding = EOT
+        textSeq[0] = Constants.SOT_TEXT.toLong()
         val copyLen = minOf(rawTokenIds.size, Constants.MAX_TEXT_LEN)
         for (i in 0 until copyLen) {
-            textSeq[1 + i] = rawTokenIds[i]
+            textSeq[1 + i] = rawTokenIds[i].toLong()
         }
-        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT
+        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT.toLong()
 
         val textTensor = Tensor.fromBlob(textSeq, longArrayOf(1, Constants.TEXT_SEQ_LEN.toLong()))
 
         // Step 2: T3 decode (autoregressive speech token generation)
         onProgress(0.05f, "Starting T3 decode...")
+        val prefillCondEmb = floatTensorToHalf(condEmb)
         val speechTokens = t3Decoder!!.decode(
-            condEmbedding = condEmb,
+            condEmbedding = prefillCondEmb,
             textTokens = textTensor
         ) { progress, message ->
             onProgress(0.05f + progress * 0.55f, message)
@@ -226,6 +227,37 @@ class ChatterboxTTS(private val context: Context) {
         buffer.asIntBuffer().get(values)
         // The shipped PTE model expects an INT32 tensor for this input.
         return Tensor.fromBlob(values, shape)
+    }
+
+
+    private fun floatTensorToHalf(tensor: Tensor): Tensor {
+        val floats = tensor.dataAsFloatArray
+        val half = ShortArray(floats.size)
+        for (i in floats.indices) half[i] = floatToHalfBits(floats[i]).toShort()
+        return Tensor.fromBlob(half, tensor.shape())
+    }
+
+    private fun floatToHalfBits(value: Float): Int {
+        val bits = java.lang.Float.floatToRawIntBits(value)
+        val sign = (bits ushr 16) and 0x8000
+        var mantissa = bits and 0x7fffff
+        val exponent = ((bits ushr 23) and 0xff) - 127
+        if (exponent <= -15) {
+            if (exponent < -24) return sign
+            mantissa = mantissa or 0x800000
+            val shift = -exponent - 14
+            var hm = mantissa ushr shift
+            if (((mantissa ushr (shift - 1)) and 1) != 0) hm += 1
+            return sign or hm
+        }
+        if (exponent >= 16) return sign or 0x7c00 or if (mantissa == 0) 0 else 0x0200
+        val he = (exponent + 15) shl 10
+        var hm = mantissa ushr 13
+        if ((mantissa and 0x1000) != 0) {
+            hm += 1
+            if (hm == 0x400) return sign or ((he + 0x400) and 0x7c00)
+        }
+        return sign or he or hm
     }
 
     fun close() {
