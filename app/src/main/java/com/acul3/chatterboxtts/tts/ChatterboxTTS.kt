@@ -220,11 +220,17 @@ class ChatterboxTTS(private val context: Context) {
 
     fun loadIntAsset(name: String, shape: LongArray): Tensor {
         val bytes = context.assets.open(name).readBytes()
+        require(bytes.size % 4 == 0) { "Invalid int32 asset size for $name: " + bytes.size }
+
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         val ints = IntArray(bytes.size / 4)
         buffer.asIntBuffer().get(ints)
-        // ExecuTorch Android: int[] creates INT32 tensor (matches re-exported models)
-        return Tensor.fromBlob(ints, shape)
+
+        // The exported T3 conditioning token model has an INT64 input.
+        // Assets are stored compactly as int32 because token ids fit in 32 bits;
+        // widen them to LongArray so ExecuTorch sees an INT64 tensor.
+        val longs = LongArray(ints.size) { ints[it].toLong() }
+        return Tensor.fromBlob(longs, shape)
     }
 
     fun close() {
