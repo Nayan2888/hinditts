@@ -6,10 +6,13 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,12 +34,51 @@ jobs:
           curl -L --fail --retry 3 "https://raw.githubusercontent.com/acul3/chatterbox-tts-android/main/app/src/main/assets/grapheme_mtl_merged_expanded_v1.json" -o app/src/main/assets/grapheme_mtl_merged_expanded_v1.json
           test -s app/src/main/assets/grapheme_mtl_merged_expanded_v1.json
 
-      - name: Build Debug APK
-        run: gradle assembleDebug
+      - name: Restore persistent signing key
+        id: signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-signing
+
+          ARTIFACT_JSON="$(curl -fsSL             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100")"
+
+          ARTIFACT_ID="$(printf '%s' "$ARTIFACT_JSON" | jq -r '
+            [.artifacts[] | select(.name=="hinditts-signing-key" and .expired==false)]
+            | sort_by(.created_at)
+            | last.id // empty
+          ')"
+
+          if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
+            echo "Restoring existing signing key artifact $ARTIFACT_ID"
+            curl -fsSL -L               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"               -o .ci-signing/signing-key.zip
+            unzip -o .ci-signing/signing-key.zip -d .ci-signing
+          else
+            echo "No persistent signing key found; creating it once."
+            keytool -genkeypair -v               -keystore .ci-signing/release.jks               -storepass hinditts-release-key-v1               -keypass hinditts-release-key-v1               -alias hinditts-release               -keyalg RSA               -keysize 4096               -validity 10000               -dname "CN=HindiTTS, OU=Nayan2888, O=HindiTTS, L=India, C=IN"
+          fi
+
+          test -s .ci-signing/release.jks
+
+      - name: Build signed release APK
+        env:
+          HINDITTS_KEYSTORE: ${{ github.workspace }}/.ci-signing/release.jks
+          HINDITTS_STORE_PASSWORD: hinditts-release-key-v1
+          HINDITTS_KEY_ALIAS: hinditts-release
+          HINDITTS_KEY_PASSWORD: hinditts-release-key-v1
+        run: gradle assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: hinditts-release
+          path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
+
+      - name: Save persistent signing key
+        uses: actions/upload-artifact@v4
+        with:
+          name: hinditts-signing-key
+          path: .ci-signing/release.jks
+          retention-days: 90
