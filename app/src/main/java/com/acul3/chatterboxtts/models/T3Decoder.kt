@@ -61,23 +61,40 @@ class T3Decoder(
         var currentLogits = prefillOutputs[0].toTensor()
         val kvFlat = prefillOutputs[1].toTensor()
 
-        // Split KV flat tensor into keys and values
-        // kvFlat shape: (79441920,) = (30, 2, 1, 16, 1293, 64) interpreted flat
-        // First half = keys (30, 1, 16, 1293, 64), second half = values
-        val kvData = kvFlat.dataAsShortArray
-        Log.i(TAG, "KV flat size: ${kvData.size}, expected: ${KV_HALF * 2}")
+        // Split KV flat tensor into keys and values without creating a huge heap array.
+        // The exported V2 prefill model is FP16, so its KV output is a ShortBuffer.
+        val raw = kvFlat.getRawDataBuffer()
+        Log.i(TAG, "KV output dtype=" + kvFlat.dtype() + ", raw=" + raw.javaClass.simpleName + ", numel=" + kvFlat.numel())
 
-        val kvKData = kvData.copyOfRange(0, KV_HALF)
-        val kvVData = kvData.copyOfRange(KV_HALF, KV_HALF * 2)
-
-        var kvK = Tensor.fromBlob(kvKData, KV_SHAPE)
-        var kvV = Tensor.fromBlob(kvVData, KV_SHAPE)
-
-        Log.i(TAG, "Prefill done, starting decode loop...")
+        var kvK: Tensor
+        var kvV: Tensor
+        when (raw) {
+            is java.nio.ShortBuffer -> {
+                val kBuf = raw.duplicate()
+                kBuf.position(0)
+                kBuf.limit(KV_HALF)
+                val vBuf = raw.duplicate()
+                vBuf.position(KV_HALF)
+                vBuf.limit(KV_HALF * 2)
+                kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
+                kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)
+            }
+            is java.nio.FloatBuffer -> {
+                val kBuf = raw.duplicate()
+                kBuf.position(0)
+                kBuf.limit(KV_HALF)
+                val vBuf = raw.duplicate()
+                vBuf.position(KV_HALF)
+                vBuf.limit(KV_HALF * 2)
+                kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
+                kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)
+            }
+            else -> throw IllegalStateException("Unsupported KV buffer type: " + raw.javaClass.name)
+        }        Log.i(TAG, "Prefill done, starting decode loop...")
         onProgress(0.05f, "Prefill complete. Decoding speech tokens...")
 
         // Autoregressive decode
-        val speechTokens = mutableListOf<Int>()
+        val speechTokens = mutableListOf<Long>()
         val maxSteps = Constants.MAX_DECODE_STEPS
 
         // First token is sampled from prefill logits
@@ -93,11 +110,11 @@ class T3Decoder(
 
             val token = SpeechSampler.sampleToken(
                 logits = vocabLogits,
-                previousTokens = speechTokens
+                previousTokens = speechTokens.map { it.toInt() }
             )
 
             // Check for EOS
-            if (token == Constants.EOT_SPEECH) {
+            if (token == Constants.EOT_SPEECH.toLong()) {
                 Log.i(TAG, "EOS token at step $step")
                 break
             }
@@ -138,6 +155,6 @@ class T3Decoder(
         Log.i(TAG, "Decode complete: ${speechTokens.size} speech tokens")
         onProgress(1f, "Generated ${speechTokens.size} speech tokens")
 
-        return LongArray(speechTokens.size) { speechTokens[it].toLong() }
+        return speechTokens.toLongArray()
     }
 }
