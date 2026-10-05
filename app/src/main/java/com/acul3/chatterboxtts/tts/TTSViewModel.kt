@@ -14,8 +14,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 data class TTSState(
-    val inputText: String = "Hello, welcome to Chatterbox text to speech!",
-    val selectedLanguage: String = "en",
+    val inputText: String = "ब्लैक होल स्पेस में सबसे रहस्यमय objects में से एक है।",
+    val selectedLanguage: String = "hi",
     val isGenerating: Boolean = false,
     val progress: Float = 0f,
     val progressMessage: String = "",
