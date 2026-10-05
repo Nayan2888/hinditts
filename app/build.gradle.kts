@@ -16,8 +16,8 @@ android {
         applicationId = "com.nayan.hinditts"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.4-hindi"
+        versionCode = 6
+        versionName = "1.5-hindi"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
