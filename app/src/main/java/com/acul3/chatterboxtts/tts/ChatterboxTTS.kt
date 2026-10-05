@@ -40,7 +40,7 @@ class ChatterboxTTS(private val context: Context) {
 
     // Cached conditioning tensors (loaded from assets)
     private var speakerEmb: Tensor? = null          // (1, 256) float32
-    private var condSpeechTokens: Tensor? = null    // (1, 150) int32
+    private var condSpeechTokens: Tensor? = null    // (1, 150) int64
     private var emotionAdv: Tensor? = null          // (1, 1, 1) float32
 
     // Cached pre-computed cond embedding (result of cond_enc, valid for default voice)
@@ -204,47 +204,10 @@ class ChatterboxTTS(private val context: Context) {
             EValue.from(condSpeechEmb),
             EValue.from(emo)
         )
-        cachedCondEmb = toHalfTensor(condEncOutputs[0].toTensor())
+        cachedCondEmb = condEncOutputs[0].toTensor()
         Log.i(TAG, "cond_emb shape: ${cachedCondEmb!!.shape().contentToString()}")
     }
 
-    /** Convert float32 conditioning output to the FP16 tensor expected by t3_prefill. */
-    private fun toHalfTensor(tensor: Tensor): Tensor {
-        val floats = tensor.dataAsFloatArray
-        val halfs = ShortArray(floats.size) { i -> floatToHalfBits(floats[i]) }
-        return Tensor.fromBlob(halfs, tensor.shape())
-    }
-
-    private fun floatToHalfBits(value: Float): Short {
-        val bits = java.lang.Float.floatToRawIntBits(value)
-        val sign = (bits ushr 16) and 0x8000
-        var mantissa = bits and 0x007FFFFF
-        val exponent = (bits ushr 23) and 0xFF
-        return when {
-            exponent == 0xFF -> (sign or 0x7C00 or if (mantissa != 0) 0x0200 else 0).toShort()
-            exponent > 142 -> (sign or 0x7C00).toShort()
-            exponent < 113 -> {
-                if (exponent < 103) sign.toShort()
-                else {
-                    mantissa = mantissa or 0x00800000
-                    val shift = 114 - exponent
-                    var hm = mantissa ushr shift
-                    if (((mantissa ushr (shift - 1)) and 1) != 0) hm += 1
-                    (sign or hm).toShort()
-                }
-            }
-            else -> {
-                val he = exponent - 112
-                var hm = mantissa ushr 13
-                val round = mantissa and 0x1FFF
-                if (round > 0x1000 || (round == 0x1000 && (hm and 1) != 0)) {
-                    hm += 1
-                    if (hm == 0x400) return (sign or ((he + 1) shl 10)).toShort()
-                }
-                (sign or (he shl 10) or hm).toShort()
-            }
-        }
-    }
     // ── Asset loading helpers ─────────────────────────────────────────────────
 
     fun loadFloatAsset(name: String, shape: LongArray): Tensor {
@@ -257,12 +220,11 @@ class ChatterboxTTS(private val context: Context) {
 
     fun loadIntAsset(name: String, shape: LongArray): Tensor {
         val bytes = context.assets.open(name).readBytes()
-        require(bytes.size % 4 == 0) { "Invalid int asset size for " + name + ": " + bytes.size }
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val values = IntArray(bytes.size / 4)
-        buffer.asIntBuffer().get(values)
-        // The shipped PTE model expects an INT32 tensor for this input.
-        return Tensor.fromBlob(values, shape)
+        val ints = IntArray(bytes.size / 4)
+        buffer.asIntBuffer().get(ints)
+        // ExecuTorch Android: int[] creates INT32 tensor (matches re-exported models)
+        return Tensor.fromBlob(ints, shape)
     }
 
     fun close() {
