@@ -61,25 +61,17 @@ class T3Decoder(
         var currentLogits = prefillOutputs[0].toTensor()
         val kvFlat = prefillOutputs[1].toTensor()
 
-        // The prefill model returns FP16 KV cache (~150MB). Keep it FP16 to avoid
-        // a huge FloatArray allocation, then place K/V into direct buffers.
-        val kvData = kvFlat.dataAsShortArray
-        val kvBuffer = java.nio.ByteBuffer.allocateDirect(kvData.size * 2)
-            .order(java.nio.ByteOrder.nativeOrder())
-            .asShortBuffer()
-        kvBuffer.put(kvData)
-        kvBuffer.rewind()
+        // Split KV flat tensor into keys and values
+        // kvFlat shape: (79441920,) = (30, 2, 1, 16, 1293, 64) interpreted flat
+        // First half = keys (30, 1, 16, 1293, 64), second half = values
+        val kvData = kvFlat.dataAsFloatArray
+        Log.i(TAG, "KV flat size: ${kvData.size}, expected: ${KV_HALF * 2}")
 
-        var kvK: Tensor
-        var kvV: Tensor
-        val kBuf = kvBuffer.duplicate()
-        kBuf.position(0)
-        kBuf.limit(KV_HALF)
-        val vBuf = kvBuffer.duplicate()
-        vBuf.position(KV_HALF)
-        vBuf.limit(KV_HALF * 2)
-        kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
-        kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)
+        val kvKData = kvData.copyOfRange(0, KV_HALF)
+        val kvVData = kvData.copyOfRange(KV_HALF, KV_HALF * 2)
+
+        var kvK = Tensor.fromBlob(kvKData, KV_SHAPE)
+        var kvV = Tensor.fromBlob(kvVData, KV_SHAPE)
 
         Log.i(TAG, "Prefill done, starting decode loop...")
         onProgress(0.05f, "Prefill complete. Decoding speech tokens...")
