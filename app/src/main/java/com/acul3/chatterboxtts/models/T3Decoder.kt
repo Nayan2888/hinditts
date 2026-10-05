@@ -64,7 +64,7 @@ class T3Decoder(
         // Split KV flat tensor into keys and values
         // kvFlat shape: (79441920,) = (30, 2, 1, 16, 1293, 64) interpreted flat
         // First half = keys (30, 1, 16, 1293, 64), second half = values
-        val kvData = kvFlat.dataAsFloatArray
+        val kvData = kvFlat.dataAsShortArray
         Log.i(TAG, "KV flat size: ${kvData.size}, expected: ${KV_HALF * 2}")
 
         val kvKData = kvData.copyOfRange(0, KV_HALF)
@@ -113,12 +113,12 @@ class T3Decoder(
             // Prepare decode inputs
             // prev_token: (1, 1) int64
             val tokenTensor = Tensor.fromBlob(
-                intArrayOf(token),
+                longArrayOf(token.toLong()),
                 longArrayOf(1, 1)
             )
             // step_idx: () int64 scalar (0-indexed, step=0 is first generated token)
             val stepTensor = Tensor.fromBlob(
-                intArrayOf(step),
+                longArrayOf(step.toLong()),
                 longArrayOf()  // scalar = empty shape
             )
 
