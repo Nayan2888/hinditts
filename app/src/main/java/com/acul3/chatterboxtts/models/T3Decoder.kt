@@ -77,7 +77,7 @@ class T3Decoder(
         onProgress(0.05f, "Prefill complete. Decoding speech tokens...")
 
         // Autoregressive decode
-        val speechTokens = mutableListOf<Long>()
+        val speechTokens = mutableListOf<Int>()
         val maxSteps = Constants.MAX_DECODE_STEPS
 
         // First token is sampled from prefill logits
@@ -93,11 +93,11 @@ class T3Decoder(
 
             val token = SpeechSampler.sampleToken(
                 logits = vocabLogits,
-                previousTokens = speechTokens.map { it.toInt() }
+                previousTokens = speechTokens
             ).toLong()
 
             // Check for EOS
-            if (token == Constants.EOT_SPEECH.toLong()) {
+            if (token == Constants.EOT_SPEECH) {
                 Log.i(TAG, "EOS token at step $step")
                 break
             }
@@ -113,12 +113,12 @@ class T3Decoder(
             // Prepare decode inputs
             // prev_token: (1, 1) int64
             val tokenTensor = Tensor.fromBlob(
-                longArrayOf(token),
+                intArrayOf(token),
                 longArrayOf(1, 1)
             )
             // step_idx: () int64 scalar (0-indexed, step=0 is first generated token)
             val stepTensor = Tensor.fromBlob(
-                longArrayOf(step.toLong()),
+                intArrayOf(step),
                 longArrayOf()  // scalar = empty shape
             )
 
