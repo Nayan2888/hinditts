@@ -40,7 +40,7 @@ class ChatterboxTTS(private val context: Context) {
 
     // Cached conditioning tensors (loaded from assets)
     private var speakerEmb: Tensor? = null          // (1, 256) float32
-    private var condSpeechTokens: Tensor? = null    // (1, 150) int64
+    private var condSpeechTokens: Tensor? = null    // (1, 150) int32
     private var emotionAdv: Tensor? = null          // (1, 1, 1) float32
 
     // Cached pre-computed cond embedding (result of cond_enc, valid for default voice)
@@ -127,11 +127,11 @@ class ChatterboxTTS(private val context: Context) {
 
         // Pad/truncate to exactly 256 positions, then wrap with SOT=255 and EOT=0
         // Total: 1 SOT + 256 tokens + 1 EOT = 258
-        val textSeq = LongArray(Constants.TEXT_SEQ_LEN) { 0L }  // default padding = EOT
-        textSeq[0] = Constants.SOT_TEXT.toLong()
+        val textSeq = IntArray(Constants.TEXT_SEQ_LEN) { 0 }  // default padding = EOT
+        textSeq[0] = Constants.SOT_TEXT
         val copyLen = minOf(rawTokenIds.size, Constants.MAX_TEXT_LEN)
         for (i in 0 until copyLen) {
-            textSeq[1 + i] = rawTokenIds[i].toLong()
+            textSeq[1 + i] = rawTokenIds[i]
         }
         textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT.toLong()
 
@@ -222,12 +222,9 @@ class ChatterboxTTS(private val context: Context) {
         val bytes = context.assets.open(name).readBytes()
         require(bytes.size % 4 == 0) { "Invalid int asset size for " + name + ": " + bytes.size }
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val values = LongArray(bytes.size / 4)
-        for (i in values.indices) {
-            // The exported t3_cond_speech_emb model was traced with torch.long (INT64).
-            // Feeding INT32 here makes ExecuTorch fail in forward() on some Android runtimes.
-            values[i] = buffer.getInt().toLong()
-        }
+        val values = IntArray(bytes.size / 4)
+        buffer.asIntBuffer().get(values)
+        // The shipped PTE model expects an INT32 tensor for this input.
         return Tensor.fromBlob(values, shape)
     }
 
