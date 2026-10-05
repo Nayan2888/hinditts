@@ -220,11 +220,15 @@ class ChatterboxTTS(private val context: Context) {
 
     fun loadIntAsset(name: String, shape: LongArray): Tensor {
         val bytes = context.assets.open(name).readBytes()
+        require(bytes.size % 4 == 0) { "Invalid int asset size for " + name + ": " + bytes.size }
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val ints = IntArray(bytes.size / 4)
-        buffer.asIntBuffer().get(ints)
-        // ExecuTorch Android: int[] creates INT32 tensor (matches re-exported models)
-        return Tensor.fromBlob(ints, shape)
+        val values = LongArray(bytes.size / 4)
+        for (i in values.indices) {
+            // The exported t3_cond_speech_emb model was traced with torch.long (INT64).
+            // Feeding INT32 here makes ExecuTorch fail in forward() on some Android runtimes.
+            values[i] = buffer.getInt().toLong()
+        }
+        return Tensor.fromBlob(values, shape)
     }
 
     fun close() {
