@@ -205,8 +205,63 @@ class ChatterboxTTS(private val context: Context) {
             EValue.from(condSpeechEmb),
             EValue.from(emo)
         )
-        cachedCondEmb = condEncOutputs[0].toTensor()
+        cachedCondEmb = toHalfTensor(condEncOutputs[0].toTensor())
         Log.i(TAG, "cond_emb shape: ${cachedCondEmb!!.shape().contentToString()}")
+    }
+
+
+    /**
+     * Convert a float32 tensor to an ExecuTorch float16 tensor.
+     * The T3 prefill model is exported in FP16, so its conditioning input
+     * must also be FP16.
+     */
+    private fun toHalfTensor(tensor: Tensor): Tensor {
+        val floats = tensor.dataAsFloatArray
+        val halfs = ShortArray(floats.size) { i -> floatToHalfBits(floats[i]) }
+        return Tensor.fromBlob(halfs, tensor.shape())
+    }
+
+    private fun floatToHalfBits(value: Float): Short {
+        val bits = java.lang.Float.floatToRawIntBits(value)
+        val sign = (bits ushr 16) and 0x8000
+        var mantissa = bits and 0x007FFFFF
+        val exponent = (bits ushr 23) and 0xFF
+
+        return when {
+            exponent == 0xFF -> {
+                // Inf / NaN
+                (sign or 0x7C00 or if (mantissa != 0) 0x0200 else 0).toShort()
+            }
+            exponent > 142 -> {
+                // Overflow to half Inf
+                (sign or 0x7C00).toShort()
+            }
+            exponent < 113 -> {
+                // Subnormal / zero in half precision
+                if (exponent < 103) {
+                    sign.toShort()
+                } else {
+                    mantissa = mantissa or 0x00800000
+                    val shift = 114 - exponent
+                    var halfMantissa = mantissa ushr shift
+                    val roundBit = (mantissa ushr (shift - 1)) and 1
+                    if (roundBit != 0) halfMantissa += 1
+                    (sign or halfMantissa).toShort()
+                }
+            }
+            else -> {
+                val halfExponent = exponent - 112
+                var halfMantissa = mantissa ushr 13
+                val round = mantissa and 0x00001FFF
+                if (round > 0x1000 || (round == 0x1000 && (halfMantissa and 1) != 0)) {
+                    halfMantissa += 1
+                    if (halfMantissa == 0x400) {
+                        return (sign or ((halfExponent + 1) shl 10)).toShort()
+                    }
+                }
+                (sign or (halfExponent shl 10) or halfMantissa).toShort()
+            }
+        }
     }
 
     // ── Asset loading helpers ─────────────────────────────────────────────────
