@@ -195,6 +195,7 @@ fun LanguageDropdown(
     enabled: Boolean = true
 ) {
     val languages = listOf(
+        "hi" to "Hindi",
         "en" to "English",
         "fr" to "French",
         "de" to "German",
