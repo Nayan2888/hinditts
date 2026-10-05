@@ -16,8 +16,8 @@ android {
         applicationId = "com.nayan.hinditts"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1-hindi"
+        versionCode = 3
+        versionName = "1.2-hindi"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -26,9 +26,29 @@ android {
         }
     }
 
+    signingConfigs {
+        create("persistentRelease") {
+            val keystorePath = providers.environmentVariable("HINDITTS_KEYSTORE").orNull
+            val storePassword = providers.environmentVariable("HINDITTS_STORE_PASSWORD").orNull
+            val keyAlias = providers.environmentVariable("HINDITTS_KEY_ALIAS").orNull
+            val keyPassword = providers.environmentVariable("HINDITTS_KEY_PASSWORD").orNull
+
+            if (keystorePath != null && storePassword != null && keyAlias != null && keyPassword != null) {
+                storeFile = file(keystorePath)
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            val persistent = signingConfigs.getByName("persistentRelease")
+            if (persistent.storeFile != null) {
+                signingConfig = persistent
+            }
         }
     }
 
