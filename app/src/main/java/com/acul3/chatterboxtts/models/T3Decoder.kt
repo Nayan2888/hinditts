@@ -94,7 +94,7 @@ class T3Decoder(
             val token = SpeechSampler.sampleToken(
                 logits = vocabLogits,
                 previousTokens = speechTokens
-            ).toLong()
+            )
 
             // Check for EOS
             if (token == Constants.EOT_SPEECH) {
@@ -138,6 +138,6 @@ class T3Decoder(
         Log.i(TAG, "Decode complete: ${speechTokens.size} speech tokens")
         onProgress(1f, "Generated ${speechTokens.size} speech tokens")
 
-        return speechTokens.toLongArray()
+        return LongArray(speechTokens.size) { speechTokens[it].toLong() }
     }
 }
