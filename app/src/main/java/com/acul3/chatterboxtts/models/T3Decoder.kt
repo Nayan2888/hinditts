@@ -61,36 +61,22 @@ class T3Decoder(
         var currentLogits = prefillOutputs[0].toTensor()
         val kvFlat = prefillOutputs[1].toTensor()
 
-        // Split KV flat tensor into keys and values without creating a huge heap array.
-        // The exported V2 prefill model is FP16, so its KV output is a ShortBuffer.
-        val raw = kvFlat.getRawDataBuffer()
-        Log.i(TAG, "KV output dtype=" + kvFlat.dtype() + ", raw=" + raw.javaClass.simpleName + ", numel=" + kvFlat.numel())
+        // Prefill exports the KV cache as FP16. Copy it once into a direct buffer,
+        // then expose K/V as zero-copy slices to avoid a massive Java heap array.
+        val kvBuffer = Tensor.allocateHalfBuffer(kvFlat.numel().toInt())
+        kvFlat.copyDataInto(kvBuffer)
+        kvBuffer.rewind()
 
         var kvK: Tensor
         var kvV: Tensor
-        when (raw) {
-            is java.nio.ShortBuffer -> {
-                val kBuf = raw.duplicate()
-                kBuf.position(0)
-                kBuf.limit(KV_HALF)
-                val vBuf = raw.duplicate()
-                vBuf.position(KV_HALF)
-                vBuf.limit(KV_HALF * 2)
-                kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
-                kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)
-            }
-            is java.nio.FloatBuffer -> {
-                val kBuf = raw.duplicate()
-                kBuf.position(0)
-                kBuf.limit(KV_HALF)
-                val vBuf = raw.duplicate()
-                vBuf.position(KV_HALF)
-                vBuf.limit(KV_HALF * 2)
-                kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
-                kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)
-            }
-            else -> throw IllegalStateException("Unsupported KV buffer type: " + raw.javaClass.name)
-        }        Log.i(TAG, "Prefill done, starting decode loop...")
+        val kBuf = kvBuffer.duplicate()
+        kBuf.position(0)
+        kBuf.limit(KV_HALF)
+        val vBuf = kvBuffer.duplicate()
+        vBuf.position(KV_HALF)
+        vBuf.limit(KV_HALF * 2)
+        kvK = Tensor.fromBlob(kBuf.slice(), KV_SHAPE)
+        kvV = Tensor.fromBlob(vBuf.slice(), KV_SHAPE)        Log.i(TAG, "Prefill done, starting decode loop...")
         onProgress(0.05f, "Prefill complete. Decoding speech tokens...")
 
         // Autoregressive decode
@@ -130,7 +116,7 @@ class T3Decoder(
             // Prepare decode inputs
             // prev_token: (1, 1) int64
             val tokenTensor = Tensor.fromBlob(
-                longArrayOf(token.toLong()),
+                longArrayOf(token),
                 longArrayOf(1, 1)
             )
             // step_idx: () int64 scalar (0-indexed, step=0 is first generated token)
