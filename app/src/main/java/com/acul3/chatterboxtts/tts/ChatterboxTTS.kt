@@ -127,21 +127,20 @@ class ChatterboxTTS(private val context: Context) {
 
         // Pad/truncate to exactly 256 positions, then wrap with SOT=255 and EOT=0
         // Total: 1 SOT + 256 tokens + 1 EOT = 258
-        val textSeq = LongArray(Constants.TEXT_SEQ_LEN) { 0L }  // default padding = EOT
-        textSeq[0] = Constants.SOT_TEXT.toLong()
+        val textSeq = IntArray(Constants.TEXT_SEQ_LEN) { 0 }  // default padding = EOT
+        textSeq[0] = Constants.SOT_TEXT
         val copyLen = minOf(rawTokenIds.size, Constants.MAX_TEXT_LEN)
         for (i in 0 until copyLen) {
-            textSeq[1 + i] = rawTokenIds[i].toLong()
+            textSeq[1 + i] = rawTokenIds[i]
         }
-        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT.toLong()
+        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT
 
         val textTensor = Tensor.fromBlob(textSeq, longArrayOf(1, Constants.TEXT_SEQ_LEN.toLong()))
 
         // Step 2: T3 decode (autoregressive speech token generation)
         onProgress(0.05f, "Starting T3 decode...")
-        val prefillCondEmb = floatTensorToHalf(condEmb)
         val speechTokens = t3Decoder!!.decode(
-            condEmbedding = prefillCondEmb,
+            condEmbedding = condEmb,
             textTokens = textTensor
         ) { progress, message ->
             onProgress(0.05f + progress * 0.55f, message)
@@ -209,118 +208,7 @@ class ChatterboxTTS(private val context: Context) {
         Log.i(TAG, "cond_emb shape: ${cachedCondEmb!!.shape().contentToString()}")
     }
 
-
-    /**
-     * Convert a float32 tensor to an ExecuTorch float16 tensor.
-     * The T3 prefill model is exported in FP16, so its conditioning input
-     * must also be FP16.
-     */
-    private fun toHalfTensor(tensor: Tensor): Tensor {
-        val floats = tensor.dataAsFloatArray
-        val halfs = ShortArray(floats.size) { i -> floatToHalfBits(floats[i]) }
-        return Tensor.fromBlob(halfs, tensor.shape())
-    }
-
-    private fun floatToHalfBits(value: Float): Short {
-        val bits = java.lang.Float.floatToRawIntBits(value)
-        val sign = (bits ushr 16) and 0x8000
-        var mantissa = bits and 0x007FFFFF
-        val exponent = (bits ushr 23) and 0xFF
-
-        return when {
-            exponent == 0xFF -> {
-                // Inf / NaN
-                (sign or 0x7C00 or if (mantissa != 0) 0x0200 else 0).toShort()
-            }
-            exponent > 142 -> {
-                // Overflow to half Inf
-                (sign or 0x7C00).toShort()
-            }
-            exponent < 113 -> {
-                // Subnormal / zero in half precision
-                if (exponent < 103) {
-                    sign.toShort()
-                } else {
-                    mantissa = mantissa or 0x00800000
-                    val shift = 114 - exponent
-                    var halfMantissa = mantissa ushr shift
-                    val roundBit = (mantissa ushr (shift - 1)) and 1
-                    if (roundBit != 0) halfMantissa += 1
-                    (sign or halfMantissa).toShort()
-                }
-            }
-            else -> {
-                val halfExponent = exponent - 112
-                var halfMantissa = mantissa ushr 13
-                val round = mantissa and 0x00001FFF
-                if (round > 0x1000 || (round == 0x1000 && (halfMantissa and 1) != 0)) {
-                    halfMantissa += 1
-                    if (halfMantissa == 0x400) {
-                        return (sign or ((halfExponent + 1) shl 10)).toShort()
-                    }
-                }
-                (sign or (halfExponent shl 10) or halfMantissa).toShort()
-            }
-        }
-    }
-
-
-    /**
-     * Convert a float32 tensor to an ExecuTorch float16 tensor.
-     * The T3 prefill model is exported in FP16, so its conditioning input
-     * must also be FP16.
-     */
-    private fun toHalfTensor(tensor: Tensor): Tensor {
-        val floats = tensor.dataAsFloatArray
-        val halfs = ShortArray(floats.size) { i -> floatToHalfBits(floats[i]) }
-        return Tensor.fromBlob(halfs, tensor.shape())
-    }
-
-    private fun floatToHalfBits(value: Float): Short {
-        val bits = java.lang.Float.floatToRawIntBits(value)
-        val sign = (bits ushr 16) and 0x8000
-        var mantissa = bits and 0x007FFFFF
-        val exponent = (bits ushr 23) and 0xFF
-
-        return when {
-            exponent == 0xFF -> {
-                (sign or 0x7C00 or if (mantissa != 0) 0x0200 else 0).toShort()
-            }
-            exponent > 142 -> {
-                (sign or 0x7C00).toShort()
-            }
-            exponent < 113 -> {
-                if (exponent < 103) {
-                    sign.toShort()
-                } else {
-                    mantissa = mantissa or 0x00800000
-                    val shift = 114 - exponent
-                    var halfMantissa = mantissa ushr shift
-                    val roundBit = (mantissa ushr (shift - 1)) and 1
-                    if (roundBit != 0) halfMantissa += 1
-                    (sign or halfMantissa).toShort()
-                }
-            }
-            else -> {
-                val halfExponent = exponent - 112
-                var halfMantissa = mantissa ushr 13
-                val round = mantissa and 0x00001FFF
-                if (round > 0x1000 || (round == 0x1000 && (halfMantissa and 1) != 0)) {
-                    halfMantissa += 1
-                    if (halfMantissa == 0x400) {
-                        return (sign or ((halfExponent + 1) shl 10)).toShort()
-                    }
-                }
-                (sign or (halfExponent shl 10) or halfMantissa).toShort()
-            }
-        }
-    }
-
-    /**
-     * Convert a float32 tensor to an ExecuTorch float16 tensor.
-     * The T3 prefill model is exported in FP16, so its conditioning input
-     * must also be FP16.
-     */
+    /** Convert float32 conditioning output to the FP16 tensor expected by t3_prefill. */
     private fun toHalfTensor(tensor: Tensor): Tensor {
         val floats = tensor.dataAsFloatArray
         val halfs = ShortArray(floats.size) { i -> floatToHalfBits(floats[i]) }
@@ -340,21 +228,20 @@ class ChatterboxTTS(private val context: Context) {
                 else {
                     mantissa = mantissa or 0x00800000
                     val shift = 114 - exponent
-                    var halfMantissa = mantissa ushr shift
-                    val roundBit = (mantissa ushr (shift - 1)) and 1
-                    if (roundBit != 0) halfMantissa += 1
-                    (sign or halfMantissa).toShort()
+                    var hm = mantissa ushr shift
+                    if (((mantissa ushr (shift - 1)) and 1) != 0) hm += 1
+                    (sign or hm).toShort()
                 }
             }
             else -> {
-                val halfExponent = exponent - 112
-                var halfMantissa = mantissa ushr 13
-                val round = mantissa and 0x00001FFF
-                if (round > 0x1000 || (round == 0x1000 && (halfMantissa and 1) != 0)) {
-                    halfMantissa += 1
-                    if (halfMantissa == 0x400) return (sign or ((halfExponent + 1) shl 10)).toShort()
+                val he = exponent - 112
+                var hm = mantissa ushr 13
+                val round = mantissa and 0x1FFF
+                if (round > 0x1000 || (round == 0x1000 && (hm and 1) != 0)) {
+                    hm += 1
+                    if (hm == 0x400) return (sign or ((he + 1) shl 10)).toShort()
                 }
-                (sign or (halfExponent shl 10) or halfMantissa).toShort()
+                (sign or (he shl 10) or hm).toShort()
             }
         }
     }
@@ -376,37 +263,6 @@ class ChatterboxTTS(private val context: Context) {
         buffer.asIntBuffer().get(values)
         // The shipped PTE model expects an INT32 tensor for this input.
         return Tensor.fromBlob(values, shape)
-    }
-
-
-    private fun floatTensorToHalf(tensor: Tensor): Tensor {
-        val floats = tensor.dataAsFloatArray
-        val half = ShortArray(floats.size)
-        for (i in floats.indices) half[i] = floatToHalfBits(floats[i]).toShort()
-        return Tensor.fromBlob(half, tensor.shape())
-    }
-
-    private fun floatToHalfBits(value: Float): Int {
-        val bits = java.lang.Float.floatToRawIntBits(value)
-        val sign = (bits ushr 16) and 0x8000
-        var mantissa = bits and 0x7fffff
-        val exponent = ((bits ushr 23) and 0xff) - 127
-        if (exponent <= -15) {
-            if (exponent < -24) return sign
-            mantissa = mantissa or 0x800000
-            val shift = -exponent - 14
-            var hm = mantissa ushr shift
-            if (((mantissa ushr (shift - 1)) and 1) != 0) hm += 1
-            return sign or hm
-        }
-        if (exponent >= 16) return sign or 0x7c00 or if (mantissa == 0) 0 else 0x0200
-        val he = (exponent + 15) shl 10
-        var hm = mantissa ushr 13
-        if ((mantissa and 0x1000) != 0) {
-            hm += 1
-            if (hm == 0x400) return sign or ((he + 0x400) and 0x7c00)
-        }
-        return sign or he or hm
     }
 
     fun close() {
