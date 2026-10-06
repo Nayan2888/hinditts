@@ -4,9 +4,10 @@ import android.util.Log
 import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
+import java.io.File
 
 /**
- * Wrapper around ExecuTorch Module for cleaner API.
+ * ExecuTorch PTE wrapper with stage/model-aware diagnostics.
  */
 class PteModel(private val modelPath: String) {
 
@@ -16,33 +17,94 @@ class PteModel(private val modelPath: String) {
 
     private var module: Module? = null
 
+    val modelName: String
+        get() = File(modelPath).name
+
     fun load() {
-        Log.i(TAG, "Loading model: $modelPath")
-        module = Module.load(modelPath)
-        Log.i(TAG, "Model loaded: $modelPath")
+        try {
+            Log.i(TAG, "Loading model=\${modelName}")
+            module = Module.load(modelPath)
+            Log.i(TAG, "Loaded model=\${modelName}")
+        } catch (e: Throwable) {
+            throw modelError("load", emptyArray(), e)
+        }
     }
 
     fun isLoaded(): Boolean = module != null
 
-    /**
-     * Run forward pass with variable inputs.
-     * Returns array of output EValues.
-     */
     fun forward(vararg inputs: EValue): Array<EValue> {
-        val mod = module ?: throw IllegalStateException("Model not loaded: $modelPath")
-        return mod.forward(*inputs)
+        val mod = module ?: throw IllegalStateException("Model not loaded: \${modelName}")
+        logInputs(inputs)
+        try {
+            val outputs = mod.forward(*inputs)
+            logOutputs(outputs)
+            return outputs
+        } catch (e: Throwable) {
+            throw modelError("forward", inputs, e)
+        }
     }
 
-    /**
-     * Run forward pass and return single tensor output.
-     */
     fun forwardSingleTensor(vararg inputs: EValue): Tensor {
-        val outputs = forward(*inputs)
-        return outputs[0].toTensor()
+        return forward(*inputs).firstOrNull()?.toTensor()
+            ?: throw IllegalStateException("Model=\${modelName} returned no outputs")
     }
 
     fun close() {
-        module?.destroy()
-        module = null
+        try {
+            module?.destroy()
+        } finally {
+            module = null
+        }
+    }
+
+    private fun logInputs(inputs: Array<out EValue>) {
+        for ((index, value) in inputs.withIndex()) {
+            runCatching {
+                val tensor = value.toTensor()
+                Log.i(
+                    TAG,
+                    "model=\${modelName} input[\${index}] dtype=\${tensor.dtype()} shape=\${tensor.shape().contentToString()}"
+                )
+            }.onFailure {
+                Log.i(TAG, "model=\${modelName} input[\${index}] \${value}")
+            }
+        }
+    }
+
+    private fun logOutputs(outputs: Array<EValue>) {
+        for ((index, value) in outputs.withIndex()) {
+            runCatching {
+                val tensor = value.toTensor()
+                Log.i(
+                    TAG,
+                    "model=\${modelName} output[\${index}] dtype=\${tensor.dtype()} shape=\${tensor.shape().contentToString()}"
+                )
+            }.onFailure {
+                Log.i(TAG, "model=\${modelName} output[\${index}] \${value}")
+            }
+        }
+    }
+
+    private fun modelError(
+        operation: String,
+        inputs: Array<out EValue>,
+        cause: Throwable
+    ): RuntimeException {
+        val detail = buildString {
+            append("ExecuTorch ").append(operation).append(" failed")
+            append("\nModel: ").append(modelName)
+            append("\nPath: ").append(modelPath)
+            inputs.forEachIndexed { index, value ->
+                runCatching {
+                    val t = value.toTensor()
+                    append("\nInput ").append(index)
+                        .append(": dtype=").append(t.dtype())
+                        .append(" shape=").append(t.shape().contentToString())
+                }
+            }
+            append("\nError: ").append(cause.message ?: cause::class.java.simpleName)
+        }
+        Log.e(TAG, detail, cause)
+        return RuntimeException(detail, cause)
     }
 }
