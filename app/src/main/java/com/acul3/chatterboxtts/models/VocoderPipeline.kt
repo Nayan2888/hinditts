@@ -51,8 +51,8 @@ class VocoderPipeline(
     }
 
     // Prompt conditioning loaded once from assets
-    private val promptTokens: Tensor by lazy { loadLongAsset("prompt_tokens.bin", longArrayOf(1, 75)) }
-    private val promptTokenLen: Tensor by lazy { loadLongAsset("prompt_token_len.bin", longArrayOf(1)) }
+    private val promptTokens: Tensor by lazy { loadPromptTokens() }
+    private val promptTokenLen: Tensor by lazy { loadInt32ScalarAsLong("prompt_token_len.bin") }
     private val xVector: Tensor by lazy { loadFloatAsset("xvector.bin", longArrayOf(1, 192)) }
     private val promptMel: Tensor by lazy { loadFloatAsset("prompt_mel.bin", longArrayOf(1, 314, 80)) }
 
@@ -330,12 +330,55 @@ class VocoderPipeline(
         return Tensor.fromBlob(floats, shape)
     }
 
-    private fun loadLongAsset(name: String, shape: LongArray): Tensor {
-        val bytes = context.assets.open(name).readBytes()
+    private fun loadPromptTokens(): Tensor {
+        val bytes = context.assets.open("prompt_tokens.bin").use { it.readBytes() }
+        require(bytes.isNotEmpty() && bytes.size % 8 == 0) {
+            "Invalid INT64 prompt_tokens.bin size: " + bytes.size
+        }
+
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val longs = LongArray(bytes.size / 8)
-        buffer.asLongBuffer().get(longs)
-        return Tensor.fromBlob(longs, shape)
+        val raw = LongArray(bytes.size / 8)
+        buffer.asLongBuffer().get(raw)
+
+        // The official reference pads the variable-length prompt_token to
+        // exactly 75 positions before calling s3gen_encoder.
+        require(raw.size <= Constants.PROMPT_TOKENS_LEN) {
+            "prompt_tokens.bin has " + raw.size + " values; max is " +
+                Constants.PROMPT_TOKENS_LEN
+        }
+
+        val padded = LongArray(Constants.PROMPT_TOKENS_LEN)
+        raw.copyInto(padded)
+
+        val tensor = Tensor.fromBlob(
+            padded,
+            longArrayOf(1, Constants.PROMPT_TOKENS_LEN.toLong())
+        )
+        require(tensor.dtype().name == "LONG") {
+            "S3Gen prompt_tokens must be INT64, got " + tensor.dtype()
+        }
+        return tensor
+    }
+
+    private fun loadInt32ScalarAsLong(name: String): Tensor {
+        val bytes = context.assets.open(name).use { it.readBytes() }
+        require(bytes.size == 4) {
+            name + " must contain exactly one INT32 value; bytes=" + bytes.size
+        }
+
+        val value = ByteBuffer.wrap(bytes)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .int
+
+        require(value in 0..Constants.PROMPT_TOKENS_LEN) {
+            name + " out of range: " + value
+        }
+
+        // Current s3gen_encoder PTE expects the length input as INT64.
+        return Tensor.fromBlob(
+            longArrayOf(value.toLong()),
+            longArrayOf(1)
+        )
     }
 }
 
