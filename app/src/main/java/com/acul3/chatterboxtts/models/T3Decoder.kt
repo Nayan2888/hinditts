@@ -31,8 +31,8 @@ class T3Decoder(
         require(condEmbedding.dtype().name == "FLOAT") {
             "T3 prefill requires FLOAT32 cond_emb, got " + condEmbedding.dtype()
         }
-        require(textTokens.dtype().name == "INT64") {
-            "T3 prefill requires INT64 text tokens, got " + textTokens.dtype()
+        require(textTokens.dtype().name == "INT32") {
+            "T3 prefill requires INT32 text tokens, got " + textTokens.dtype()
         }
         require(condEmbedding.shape().contentEquals(longArrayOf(1, 34, 1024))) {
             "T3 prefill requires cond_emb [1,34,1024], got " +
