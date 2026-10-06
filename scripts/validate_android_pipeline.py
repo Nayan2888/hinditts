@@ -222,8 +222,16 @@ def main():
     speech = torch.zeros(1, 1000, dtype=torch.long)
     speech[0, :len(generated)] = torch.tensor(generated, dtype=torch.long)
     speech_len = torch.tensor([len(generated)], dtype=torch.long)
-    prompt_tokens = load_i64("prompt_tokens.bin", (1, 75))
-    prompt_len = load_i64("prompt_token_len.bin", (1,))
+    raw_prompt_tokens = load_i64("prompt_tokens.bin", (1, 37))
+    prompt_tokens = torch.zeros(1, 75, dtype=torch.long)
+    prompt_tokens[:, :raw_prompt_tokens.shape[1]] = raw_prompt_tokens
+    raw_prompt_len = np.fromfile(ASSETS / "prompt_token_len.bin", dtype=np.int32)
+    if raw_prompt_len.size != 1:
+        raise RuntimeError("prompt_token_len.bin must contain one INT32 value")
+    prompt_len_value = int(raw_prompt_len[0])
+    prompt_len = torch.tensor([prompt_len_value], dtype=torch.long)
+    if not (0 <= prompt_len_value <= 75):
+        raise RuntimeError(f"invalid prompt token length: {prompt_len_value}")
     xvector = load_f32("xvector.bin", (1, 192))
     enc = run(s3, speech, speech_len, prompt_tokens, prompt_len, xvector)
     h, h_len, embedding, mel_len1 = enc
