@@ -200,8 +200,8 @@ def main():
         if not (0 <= token < SPEECH_VOCAB):
             raise RuntimeError(f"invalid speech token {token}")
         generated.append(token)
-        prev = torch.tensor([[token]], dtype=torch.long)
-        step_idx = torch.tensor(step, dtype=torch.long)
+        prev = torch.tensor([[token]], dtype=torch.int32)
+        step_idx = torch.tensor(step, dtype=torch.int32)
         d = run(decode, prev, step_idx, kv_k, kv_v)
         logits = d[0].float()
         assert_shape(logits, (1, SPEECH_VOCAB), "decode logits")
