@@ -43,7 +43,7 @@ def save_tensor(tensor, path, name):
         with open(path, "wb") as f:
             f.write(arr.tobytes())
     elif arr.dtype in (torch.int32, torch.int64, torch.long):
-        arr = arr.int().numpy()
+        arr = arr.to(torch.int32).numpy()
         with open(path, "wb") as f:
             f.write(arr.tobytes())
     else:
