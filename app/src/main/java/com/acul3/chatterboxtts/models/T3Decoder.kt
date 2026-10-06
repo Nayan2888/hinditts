@@ -125,11 +125,11 @@ class T3Decoder(
             }
 
             val tokenTensor = Tensor.fromBlob(
-                longArrayOf(token),
+                intArrayOf(token.toInt()),
                 longArrayOf(1, 1)
             )
             val stepTensor = Tensor.fromBlob(
-                longArrayOf(step.toLong()),
+                intArrayOf(step),
                 longArrayOf()
             )
 
