@@ -3,11 +3,13 @@ package com.acul3.chatterboxtts.tts
 import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
+import java.text.Normalizer
 
 /**
- * Kotlin port of MTLTokenizer — BPE tokenizer for multilingual text.
- * Loads vocabulary from a JSON asset file and performs byte-pair encoding.
+ * Kotlin tokenizer bridge for the Chatterbox multilingual tokenizer asset.
+ *
+ * Chatterbox adds SOT/EOT in the T3 caller, so this class returns only the
+ * language-tagged text token payload.
  */
 class TextTokenizer(context: Context) {
 
@@ -18,85 +20,70 @@ class TextTokenizer(context: Context) {
     }
 
     private val token2id: Map<String, Int>
-    private val id2token: Map<Int, String>
     private val merges: List<Pair<String, String>>
 
     init {
-        val json = context.assets.open(VOCAB_FILE).bufferedReader().readText()
-        val data = Gson().fromJson<TokenizerData>(json, TokenizerData::class.java)
+        val json = context.assets.open(VOCAB_FILE).bufferedReader().use { it.readText() }
+        val data = Gson().fromJson(json, TokenizerData::class.java)
 
         token2id = data.model?.vocab ?: data.vocab ?: emptyMap()
-        id2token = token2id.entries.associate { (k, v) -> v to k }
-        merges = (data.model?.merges ?: data.merges ?: emptyList()).map { line ->
+        merges = (data.model?.merges ?: data.merges ?: emptyList()).mapNotNull { line ->
             val parts = line.split(" ", limit = 2)
-            parts[0] to parts[1]
+            if (parts.size == 2) parts[0] to parts[1] else null
         }
 
-        Log.i(TAG, "Loaded vocab: ${token2id.size} tokens, ${merges.size} merges")
+        require(token2id.containsKey("[hi]")) { "Tokenizer vocabulary missing [hi] language token" }
+        require(token2id.containsKey("[en]")) { "Tokenizer vocabulary missing [en] language token" }
+
+        Log.i(TAG, "Loaded vocab=\${token2id.size}, merges=\${merges.size}")
     }
 
     /**
-     * Tokenize text with language prefix.
-     * Returns list of token IDs with SOT and EOT markers.
+     * Match the reference MTLTokenizer preprocessing:
+     * lowercase, NFKD normalization, language prefix and [SPACE].
+     *
+     * Returns only payload IDs. T3 wraps them with SOT_TEXT / EOT_TEXT.
      */
     fun encode(text: String, language: String): IntArray {
-        val tokens = mutableListOf<Int>()
+        require(language.isNotBlank()) { "Language code is blank" }
 
-        // Add SOT
-        tokens.add(Constants.SOT_TEXT)
+        val normalized = Normalizer.normalize(text.trim().lowercase(), Normalizer.Form.NFKD)
+        val langTag = "[\${language.lowercase()}]"
 
-        // Add language tag
-        val langTag = "[$language]"
-        token2id[langTag]?.let { tokens.add(it) }
-            ?: Log.w(TAG, "Language tag $langTag not in vocab")
-
-        // Process text: replace spaces with [SPACE], split into characters
-        val processed = text.trim()
         val symbols = mutableListOf<String>()
+        val langId = token2id[langTag]
+            ?: throw IllegalArgumentException("Language token \$langTag is missing from tokenizer vocabulary")
+        symbols.add(langTag)
 
-        for (char in processed) {
-            if (char == ' ') {
-                symbols.add(SPACE_TOKEN)
-            } else {
-                symbols.add(char.toString())
-            }
+        for (ch in normalized) {
+            symbols.add(if (ch == ' ') SPACE_TOKEN else ch.toString())
         }
 
-        // Apply BPE merges
         val merged = applyBPE(symbols)
-
-        // Convert to IDs
+        val ids = ArrayList<Int>(merged.size)
         for (symbol in merged) {
             val id = token2id[symbol]
             if (id != null) {
-                tokens.add(id)
+                ids.add(id)
+                continue
+            }
+
+            val unk = token2id["[UNK]"]
+            if (unk != null) {
+                Log.w(TAG, "Unknown tokenizer symbol '\$symbol'; using [UNK]")
+                ids.add(unk)
             } else {
-                // Try character-by-character fallback
-                for (c in symbol) {
-                    token2id[c.toString()]?.let { tokens.add(it) }
-                }
+                throw IllegalArgumentException("Unknown tokenizer symbol '\$symbol' and [UNK] is missing")
             }
         }
 
-        // Add EOT
-        tokens.add(Constants.EOT_TEXT)
-
-        // Truncate to max length
-        val result = if (tokens.size > Constants.MAX_TEXT_LEN) {
-            tokens.subList(0, Constants.MAX_TEXT_LEN - 1).toMutableList().also {
-                it.add(Constants.EOT_TEXT)
-            }
-        } else {
-            tokens
-        }
-
-        return result.toIntArray()
+        return ids.toIntArray()
     }
 
-    private fun applyBPE(symbols: MutableList<String>): List<String> {
-        if (symbols.size <= 1) return symbols
+    private fun applyBPE(input: List<String>): List<String> {
+        if (input.size <= 1 || merges.isEmpty()) return input
 
-        val result = symbols.toMutableList()
+        val result = input.toMutableList()
 
         for ((first, second) in merges) {
             var i = 0
@@ -104,19 +91,16 @@ class TextTokenizer(context: Context) {
                 if (result[i] == first && result[i + 1] == second) {
                     result[i] = first + second
                     result.removeAt(i + 1)
+                    if (i > 0) i--
                 } else {
                     i++
                 }
             }
             if (result.size <= 1) break
         }
-
         return result
     }
 
-    /**
-     * Data class matching the HuggingFace tokenizer JSON format.
-     */
     data class TokenizerData(
         val model: ModelData? = null,
         val vocab: Map<String, Int>? = null,
