@@ -7,180 +7,169 @@ import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Tensor
 
 /**
- * T3 prefill + autoregressive decode loop.
- * Produces speech tokens from text + conditioning embeddings.
+ * T3 prefill + static-cache autoregressive decoder.
  *
- * Model interfaces (V4):
- *   t3_prefill.pte:
- *     inputs:  cond_emb (1,34,1024) float16, text_tokens (1,258) int64
- *     outputs: logits (1,8194) float16, kv_flat (79441920,) float16
- *              kv_flat shape = (30, 2, 1, 16, 1293, 64) — split dim1 → keys/values
- *
- *   t3_decode.pte (V4):
- *     inputs:  prev_token (1,1) int64, step_idx () int64 scalar,
- *              kv_k (30,1,16,1293,64) float16, kv_v (30,1,16,1293,64) float16
- *     outputs: logits (1,8194) float16,
- *              kv_k (30,1,16,1293,64) float16, kv_v (30,1,16,1293,64) float16
+ * The published Hugging Face PTE artifacts were runtime-validated separately.
+ * Their current Android contract is FLOAT32 for T3 model tensors even though
+ * some exporter revisions convert the Python module to FP16.
  */
 class T3Decoder(
     private val prefillModel: PteModel,
     private val decodeModel: PteModel
 ) {
-
     companion object {
         private const val TAG = "T3Decoder"
-        // KV flat size from prefill: 30 * 2 * 1 * 16 * 1293 * 64 = 79441920
-        // Split: keys = first 30*1*16*1293*64 = 39720960 floats
-        //        values = second 39720960 floats
-        private const val KV_HALF = 30 * 1 * 16 * 1293 * 64  // 39720960
+        private const val KV_HALF = 30 * 1 * 16 * 1293 * 64
         private val KV_SHAPE = longArrayOf(30, 1, 16, 1293, 64)
-
-        private fun floatToHalfBits(value: Float): Short {
-            val bits = java.lang.Float.floatToRawIntBits(value)
-            val sign = (bits ushr 16) and 0x8000
-            val exp = (bits ushr 23) and 0xFF
-            val mant = bits and 0x7FFFFF
-
-            if (exp == 0xFF) {
-                return (sign or if (mant == 0) 0x7C00 else 0x7E00).toShort()
-            }
-
-            var halfExp = exp - 127 + 15
-            if (halfExp >= 0x1F) return (sign or 0x7C00).toShort()
-            if (halfExp <= 0) {
-                if (halfExp < -10) return sign.toShort()
-                var halfMant = (mant or 0x800000) ushr (1 - halfExp)
-                if ((halfMant and 0x00001000) != 0) halfMant += 0x00002000
-                return (sign or (halfMant ushr 13)).toShort()
-            }
-
-            var halfMant = mant
-            if ((halfMant and 0x00001000) != 0) {
-                halfMant += 0x00002000
-                if ((halfMant and 0x00800000) != 0) {
-                    halfMant = 0
-                    halfExp += 1
-                    if (halfExp >= 0x1F) return (sign or 0x7C00).toShort()
-                }
-            }
-            return (sign or (halfExp shl 10) or (halfMant ushr 13)).toShort()
-        }
-
-        private fun fp32ToFp16Tensor(input: Tensor): Tensor {
-            val src = input.dataAsFloatArray
-            val out = ShortArray(src.size) { i -> floatToHalfBits(src[i]) }
-            return Tensor.fromBlob(out, input.shape())
-        }
     }
 
-    /**
-     * Run the full T3 decode pipeline.
-     *
-     * @param condEmbedding Conditioning embedding tensor (1, 34, 1024)
-     * @param textTokens Text token IDs (1, 258) int64
-     * @param onProgress Callback with (progress 0-1, message)
-     * @return Array of speech token IDs
-     */
     fun decode(
         condEmbedding: Tensor,
         textTokens: Tensor,
         onProgress: (Float, String) -> Unit = { _, _ -> }
     ): LongArray {
-        Log.i(TAG, "Starting T3 prefill...")
+        require(condEmbedding.dtype().name == "FLOAT") {
+            "T3 prefill requires FLOAT32 cond_emb, got " + condEmbedding.dtype()
+        }
+        require(textTokens.dtype().name == "INT64") {
+            "T3 prefill requires INT64 text tokens, got " + textTokens.dtype()
+        }
+        require(condEmbedding.shape().contentEquals(longArrayOf(1, 34, 1024))) {
+            "T3 prefill requires cond_emb [1,34,1024], got " +
+                    condEmbedding.shape().contentToString()
+        }
+        require(textTokens.shape().contentEquals(longArrayOf(1, 258))) {
+            "T3 prefill requires text_tokens [1,258], got " +
+                    textTokens.shape().contentToString()
+        }
+
+        Log.i(TAG, "Prefill input cond=" + condEmbedding.dtype() + " " +
+                condEmbedding.shape().contentToString() + ", text=" +
+                textTokens.dtype() + " " + textTokens.shape().contentToString())
         onProgress(0f, "Running T3 prefill...")
 
-        // Prefill export is FP16 for cond_emb. The conditioning encoder
-        // produces portable FP32, so convert at this boundary.
-        val condEmbeddingFp16 = fp32ToFp16Tensor(condEmbedding)
-        Log.i(TAG, "Prefill inputs: cond=${condEmbeddingFp16.dtype()} ${condEmbeddingFp16.shape().contentToString()}, text=${textTokens.dtype()} ${textTokens.shape().contentToString()}")
+        val prefillOutputs = try {
+            prefillModel.forward(
+                EValue.from(condEmbedding),
+                EValue.from(textTokens)
+            )
+        } catch (e: Throwable) {
+            throw RuntimeException("Stage: T3 Prefill\n" + e.message, e)
+        }
 
-        // Prefill: get initial logits and flat FP16 KV cache
-        val prefillOutputs = prefillModel.forward(
-            EValue.from(condEmbeddingFp16),
-            EValue.from(textTokens)
-        )
+        require(prefillOutputs.size >= 2) {
+            "Stage: T3 Prefill\nExpected 2 outputs, got " + prefillOutputs.size
+        }
 
         var currentLogits = prefillOutputs[0].toTensor()
         val kvFlat = prefillOutputs[1].toTensor()
 
-        // Split KV flat tensor into keys and values
-        // kvFlat shape: (79441920,) = (30, 2, 1, 16, 1293, 64) interpreted flat
-        // First half = keys (30, 1, 16, 1293, 64), second half = values
-        val kvData = kvFlat.dataAsShortArray
-        Log.i(TAG, "KV flat dtype=${kvFlat.dtype()}, size=${kvData.size}, expected: ${KV_HALF * 2}")
+        require(currentLogits.dtype().name == "FLOAT") {
+            "Stage: T3 Prefill\nUnexpected logits dtype: " + currentLogits.dtype()
+        }
+        require(kvFlat.dtype().name == "FLOAT") {
+            "Stage: T3 Prefill\nUnexpected KV dtype: " + kvFlat.dtype()
+        }
+        require(currentLogits.shape().contentEquals(longArrayOf(1, Constants.SPEECH_VOCAB.toLong()))) {
+            "Stage: T3 Prefill\nUnexpected logits shape: " +
+                    currentLogits.shape().contentToString()
+        }
+        require(kvFlat.numel() == KV_HALF.toLong() * 2L) {
+            "Stage: T3 Prefill\nUnexpected KV size: " + kvFlat.numel()
+        }
 
-        val kvKData = kvData.copyOfRange(0, KV_HALF)
-        val kvVData = kvData.copyOfRange(KV_HALF, KV_HALF * 2)
+        val kvData = kvFlat.dataAsFloatArray
+        var kvK = Tensor.fromBlob(kvData.copyOfRange(0, KV_HALF), KV_SHAPE)
+        var kvV = Tensor.fromBlob(kvData.copyOfRange(KV_HALF, KV_HALF * 2), KV_SHAPE)
 
-        // Decode export is FP16; preserve the raw half bits.
-        var kvK = Tensor.fromBlob(kvKData, KV_SHAPE)
-        var kvV = Tensor.fromBlob(kvVData, KV_SHAPE)
-
-        Log.i(TAG, "Prefill done, starting decode loop...")
+        Log.i(TAG, "Prefill outputs logits=" + currentLogits.dtype() + " " +
+                currentLogits.shape().contentToString() + ", kv=" +
+                kvFlat.dtype() + " numel=" + kvFlat.numel())
         onProgress(0.05f, "Prefill complete. Decoding speech tokens...")
 
-        // Autoregressive decode
-        val speechTokens = mutableListOf<Long>()
-        val maxSteps = Constants.MAX_DECODE_STEPS
+        val speechTokens = ArrayList<Long>(Constants.MAX_DECODE_STEPS)
 
-        // First token is sampled from prefill logits
-        for (step in 0 until maxSteps) {
+        for (step in 0 until Constants.MAX_DECODE_STEPS) {
             val logitsData = currentLogits.dataAsFloatArray
-
-            // Take logits for the last position (shape is (1, SPEECH_VOCAB) already)
-            val vocabLogits = if (logitsData.size > Constants.SPEECH_VOCAB) {
-                logitsData.copyOfRange(logitsData.size - Constants.SPEECH_VOCAB, logitsData.size)
-            } else {
-                logitsData
+            if (logitsData.size < Constants.SPEECH_VOCAB) {
+                throw RuntimeException(
+                    "Stage: T3 Decode\nLogits length " + logitsData.size +
+                            " < vocab " + Constants.SPEECH_VOCAB
+                )
             }
+
+            val vocabLogits = logitsData.copyOfRange(
+                logitsData.size - Constants.SPEECH_VOCAB,
+                logitsData.size
+            )
 
             val token = SpeechSampler.sampleToken(
                 logits = vocabLogits,
                 previousTokens = speechTokens.map { it.toInt() }
             ).toLong()
 
-            // Check for EOS
             if (token == Constants.EOT_SPEECH.toLong()) {
-                Log.i(TAG, "EOS token at step $step")
+                Log.i(TAG, "EOS at step=" + step)
                 break
             }
 
             speechTokens.add(token)
 
-            // Progress update
-            val progress = 0.05f + (step.toFloat() / maxSteps) * 0.95f
-            if (step % 50 == 0) {
-                onProgress(progress, "Decode step $step: ${speechTokens.size} tokens generated")
+            if (step % 25 == 0) {
+                val progress = 0.05f +
+                        (step.toFloat() / Constants.MAX_DECODE_STEPS) * 0.95f
+                onProgress(
+                    progress,
+                    "T3 decode step " + step + ": " + speechTokens.size + " tokens"
+                )
             }
 
-            // Prepare decode inputs
-            // prev_token: (1, 1) int64
             val tokenTensor = Tensor.fromBlob(
                 longArrayOf(token),
                 longArrayOf(1, 1)
             )
-            // step_idx: () int64 scalar (0-indexed, step=0 is first generated token)
             val stepTensor = Tensor.fromBlob(
                 longArrayOf(step.toLong()),
-                longArrayOf()  // scalar = empty shape
+                longArrayOf()
             )
 
-            // Run decode step V4
-            val decodeOutputs = decodeModel.forward(
-                EValue.from(tokenTensor),
-                EValue.from(stepTensor),
-                EValue.from(kvK),
-                EValue.from(kvV)
-            )
+            val outputs = try {
+                decodeModel.forward(
+                    EValue.from(tokenTensor),
+                    EValue.from(stepTensor),
+                    EValue.from(kvK),
+                    EValue.from(kvV)
+                )
+            } catch (e: Throwable) {
+                throw RuntimeException(
+                    "Stage: T3 Decode\nStep: " + step +
+                            "\nPrev token: " + token + "\n" + e.message,
+                    e
+                )
+            }
 
-            currentLogits = decodeOutputs[0].toTensor()
-            kvK = decodeOutputs[1].toTensor()
-            kvV = decodeOutputs[2].toTensor()
+            require(outputs.size >= 3) {
+                "Stage: T3 Decode\nExpected 3 outputs, got " + outputs.size
+            }
+
+            currentLogits = outputs[0].toTensor()
+            kvK = outputs[1].toTensor()
+            kvV = outputs[2].toTensor()
+
+            require(currentLogits.dtype().name == "FLOAT") {
+                "Stage: T3 Decode\nLogits dtype: " + currentLogits.dtype()
+            }
+            require(kvK.dtype().name == "FLOAT" && kvV.dtype().name == "FLOAT") {
+                "Stage: T3 Decode\nKV dtype k=" + kvK.dtype() + " v=" + kvV.dtype()
+            }
         }
 
-        Log.i(TAG, "Decode complete: ${speechTokens.size} speech tokens")
-        onProgress(1f, "Generated ${speechTokens.size} speech tokens")
+        if (speechTokens.isEmpty()) {
+            throw RuntimeException("Stage: T3 Decode\nGenerated 0 speech tokens")
+        }
 
+        Log.i(TAG, "T3 complete: " + speechTokens.size + " speech tokens")
+        onProgress(1f, "Generated " + speechTokens.size + " speech tokens")
         return speechTokens.toLongArray()
     }
 }
