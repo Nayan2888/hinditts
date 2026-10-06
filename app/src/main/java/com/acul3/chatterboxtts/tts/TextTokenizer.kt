@@ -186,18 +186,18 @@ class TextTokenizer(context: Context) {
         if (cp == '_'.code) return true
 
         return when (Character.getType(cp)) {
-            Character.UPPERCASE_LETTER,
-            Character.LOWERCASE_LETTER,
-            Character.TITLECASE_LETTER,
-            Character.MODIFIER_LETTER,
-            Character.OTHER_LETTER,
-            Character.NON_SPACING_MARK,
-            Character.COMBINING_SPACING_MARK,
-            Character.ENCLOSING_MARK,
-            Character.DECIMAL_DIGIT_NUMBER,
-            Character.LETTER_NUMBER,
-            Character.OTHER_NUMBER,
-            Character.CONNECTOR_PUNCTUATION -> true
+            Character.UPPERCASE_LETTER.toInt(),
+            Character.LOWERCASE_LETTER.toInt(),
+            Character.TITLECASE_LETTER.toInt(),
+            Character.MODIFIER_LETTER.toInt(),
+            Character.OTHER_LETTER.toInt(),
+            Character.NON_SPACING_MARK.toInt(),
+            Character.COMBINING_SPACING_MARK.toInt(),
+            Character.ENCLOSING_MARK.toInt(),
+            Character.DECIMAL_DIGIT_NUMBER.toInt(),
+            Character.LETTER_NUMBER.toInt(),
+            Character.OTHER_NUMBER.toInt(),
+            Character.CONNECTOR_PUNCTUATION.toInt() -> true
             else -> false
         }
     }
