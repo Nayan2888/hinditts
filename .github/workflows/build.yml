@@ -28,14 +28,28 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Prepare cached conditioning embedding
+      - name: Restore validated conditioning cache
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check "torch==2.10.0" "executorch==1.1.0"
           mkdir -p .ci-cond
-          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_speech_emb.pte" -o .ci-cond/t3_cond_speech_emb.pte
-          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_enc.pte" -o .ci-cond/t3_cond_enc.pte
-          python3 scripts/build_cached_cond_emb.py .ci-cond/t3_cond_speech_emb.pte .ci-cond/t3_cond_enc.pte app/src/main/assets/cond_speech_tokens.bin app/src/main/assets/speaker_emb.bin app/src/main/assets/cached_cond_emb.bin
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100"
+          ARTIFACT_JSON="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API")"
+          ARTIFACT_ID="$(printf '%s' "$ARTIFACT_JSON" | jq -r '[.artifacts[] | select(.name=="hinditts-release" and .expired==false)] | sort_by(.created_at) | last.id // empty')"
+          if [ -z "$ARTIFACT_ID" ] || [ "$ARTIFACT_ID" = "null" ]; then
+            echo "No previous validated APK artifact found."
+            exit 1
+          fi
+          echo "Using validated APK artifact $ARTIFACT_ID for conditioning cache"
+          curl -fsSL -L             -H "Authorization: Bearer $GH_TOKEN"             -H "Accept: application/vnd.github+json"             "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"             -o .ci-cond/hinditts-release.zip
+          unzip -p .ci-cond/hinditts-release.zip app-release.apk > .ci-cond/app-release.apk
+          test -s .ci-cond/app-release.apk
+          unzip -p .ci-cond/app-release.apk assets/cached_cond_emb.bin > app/src/main/assets/cached_cond_emb.bin
+          test -s app/src/main/assets/cached_cond_emb.bin
+          test "$(stat -c%s app/src/main/assets/cached_cond_emb.bin)" -eq 139264
+          sha256sum app/src/main/assets/cached_cond_emb.bin
+
       - name: Download tokenizer asset
         run: |
           mkdir -p app/src/main/assets
