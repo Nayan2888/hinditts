@@ -64,42 +64,27 @@ class ChatterboxTTS(private val context: Context) {
         onProgress(0f, "Loading tokenizer...")
         tokenizer = TextTokenizer(context)
 
-        // Load conditioning models
-        onProgress(0.1f, "Loading cond speech emb model...")
-        condSpeechEmbModel = PteModel(modelManager.getModelPath("t3_cond_speech_emb.pte")).also { it.load() }
-
-        onProgress(0.2f, "Loading cond enc model...")
-        condEncModel = PteModel(modelManager.getModelPath("t3_cond_enc.pte")).also { it.load() }
-
-        // Load T3 models
-        onProgress(0.3f, "Loading T3 prefill...")
+        // Conditioning is precomputed during CI; Android loads only the cached embedding.
+        onProgress(0.1f, "Loading T3 prefill...")
         val prefill = PteModel(modelManager.getModelPath("t3_prefill.pte")).also { it.load() }
-        onProgress(0.5f, "Loading T3 decode...")
+        onProgress(0.3f, "Loading T3 decode...")
         val decode = PteModel(modelManager.getModelPath("t3_decode.pte")).also { it.load() }
         t3Decoder = T3Decoder(prefill, decode)
 
         // Load vocoder models
-        onProgress(0.6f, "Loading S3Gen encoder...")
+        onProgress(0.45f, "Loading S3Gen encoder...")
         val s3gen = PteModel(modelManager.getModelPath("s3gen_encoder.pte")).also { it.load() }
-        onProgress(0.7f, "Loading CFM step...")
+        onProgress(0.6f, "Loading CFM step...")
         val cfm = PteModel(modelManager.getModelPath("cfm_step.pte")).also { it.load() }
-        onProgress(0.8f, "Loading HiFiGAN...")
+        onProgress(0.75f, "Loading HiFiGAN...")
         val hifigan = PteModel(modelManager.getModelPath("hifigan.pte")).also { it.load() }
         vocoderPipeline = VocoderPipeline(context, s3gen, cfm, hifigan)
 
         // Load default voice conditioning from assets
-        onProgress(0.9f, "Loading default voice...")
+        onProgress(0.9f, "Loading cached default voice...")
         loadDefaultConditioning()
 
-        // Pre-compute cond_emb (speaker-specific, can be cached)
-        onProgress(0.95f, "Pre-computing conditioning embedding...")
-        try {
-            precomputeCondEmb()
-        } catch (e: Exception) {
-            Log.e(TAG, "precomputeCondEmb FAILED", e)
-            throw RuntimeException("Conditioning failed: ${e.message}\n${e.stackTraceToString().take(300)}", e)
-        }
-
+        onProgress(0.98f, "Conditioning ready")
         onProgress(1f, "All models loaded!")
         Log.i(TAG, "All models loaded successfully")
     }
@@ -171,13 +156,11 @@ class ChatterboxTTS(private val context: Context) {
      */
     private fun loadDefaultConditioning() {
         try {
-            speakerEmb = loadFloatAsset("speaker_emb.bin", longArrayOf(1, 256))
-            condSpeechTokens = loadIntAsset("cond_speech_tokens.bin", longArrayOf(1, 150))
-            emotionAdv = loadFloatAsset("emotion_adv.bin", longArrayOf(1, 1, 1))
-            Log.i(TAG, "Loaded conditioning tensors from assets")
+            cachedCondEmb = loadFloatAsset("cached_cond_emb.bin", longArrayOf(1, Constants.COND_LEN.toLong(), 1024))
+            Log.i(TAG, "Loaded cached conditioning embedding: " + cachedCondEmb!!.shape().contentToString())
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load conditioning assets: ${e.message}", e)
-            throw RuntimeException("Conditioning assets missing or corrupted: ${e.message}", e)
+            Log.e(TAG, "Failed to load cached conditioning embedding: " + e.message, e)
+            throw RuntimeException("Cached conditioning asset missing or corrupted: " + e.message, e)
         }
     }
 
