@@ -51,8 +51,6 @@ object Constants {
 
     // Model filenames (must match HuggingFace repo exactly)
     val MODEL_FILES = listOf(
-        "t3_cond_speech_emb.pte",
-        "t3_cond_enc.pte",
         "t3_prefill.pte",
         "t3_decode.pte",
         "s3gen_encoder.pte",
