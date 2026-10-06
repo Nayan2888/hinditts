@@ -1,0 +1,75 @@
+name: Validate PTE Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ExecuTorch validation runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check "torch==2.10.0" "executorch==1.1.0" "numpy" "soundfile"
+
+      - name: Download PTEs
+        run: |
+          set -e
+          mkdir -p .ci-models
+          for f in t3_cond_speech_emb.pte t3_cond_enc.pte t3_prefill.pte t3_decode.pte s3gen_encoder.pte cfm_step.pte hifigan.pte; do
+            python - "$f" <<'PY'
+from pathlib import Path
+from urllib.request import urlretrieve
+import sys
+
+name = sys.argv[1]
+out = Path(".ci-models") / name
+urlretrieve("https://huggingface.co/acul3/chatterbox-executorch/resolve/main/" + name, out)
+if out.stat().st_size == 0:
+    raise SystemExit("empty model: " + name)
+print(name, out.stat().st_size)
+PY
+          done
+
+      - name: Download tokenizer
+        run: |
+          python - <<'PY'
+from pathlib import Path
+from urllib.request import urlretrieve
+out = Path("app/src/main/assets/grapheme_mtl_merged_expanded_v1.json")
+urlretrieve("https://raw.githubusercontent.com/acul3/chatterbox-tts-android/main/app/src/main/assets/grapheme_mtl_merged_expanded_v1.json", out)
+if out.stat().st_size == 0:
+    raise SystemExit("empty tokenizer")
+PY
+
+      - name: Validate conditioning cache generation
+        run: |
+          python scripts/build_cached_cond_emb.py \
+            .ci-models/t3_cond_speech_emb.pte \
+            .ci-models/t3_cond_enc.pte \
+            app/src/main/assets/cond_speech_tokens.bin \
+            app/src/main/assets/speaker_emb.bin \
+            app/src/main/assets/cached_cond_emb.bin
+
+      - name: Validate complete Hindi PTE pipeline
+        run: python scripts/validate_android_pipeline.py
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hinditts-pte-validation
+          path: .ci-output
+          retention-days: 14
