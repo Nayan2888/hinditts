@@ -159,7 +159,7 @@ def main():
         ids.append(int(vocab.get(key, vocab["[UNK]"])))
     ids = ids[:MAX_TEXT_LEN]
     text_seq = [SOT_TEXT] + ids + [EOT_TEXT] * (MAX_TEXT_LEN - len(ids)) + [EOT_TEXT]
-    text_t = torch.tensor([text_seq], dtype=torch.long)
+    text_t = torch.tensor([text_seq], dtype=torch.int32)
     assert_shape(text_t, (1, 258), "text_tokens")
     results["tokenizer_contract"] = "PASS"
     print("   Hindi text payload tokens:", len(ids), "->", tuple(text_t.shape))
