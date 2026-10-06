@@ -28,6 +28,14 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Prepare cached conditioning embedding
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check "torch==2.10.0" "executorch==1.1.0"
+          mkdir -p .ci-cond
+          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_speech_emb.pte" -o .ci-cond/t3_cond_speech_emb.pte
+          curl -L --fail --retry 3 "https://huggingface.co/acul3/chatterbox-executorch/resolve/main/t3_cond_enc.pte" -o .ci-cond/t3_cond_enc.pte
+          python3 scripts/build_cached_cond_emb.py .ci-cond/t3_cond_speech_emb.pte .ci-cond/t3_cond_enc.pte app/src/main/assets/cond_speech_tokens.bin app/src/main/assets/speaker_emb.bin app/src/main/assets/cached_cond_emb.bin
       - name: Download tokenizer asset
         run: |
           mkdir -p app/src/main/assets
