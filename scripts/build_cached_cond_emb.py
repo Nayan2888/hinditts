@@ -34,7 +34,7 @@ def main():
         raise RuntimeError("Expected 256 speaker embedding values, got " + str(speaker.size))
 
     runtime = Runtime.get()
-    cond_tokens = torch.from_numpy(ids.astype(np.int64)).reshape(1, 150)
+    cond_tokens = torch.from_numpy(ids).reshape(1, 150).to(dtype=torch.int32)
     speaker_t = torch.from_numpy(speaker).reshape(1, 256).float()
     emotion_t = torch.full((1, 1, 1), 0.5, dtype=torch.float32)
 
