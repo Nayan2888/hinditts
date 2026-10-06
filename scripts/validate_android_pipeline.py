@@ -169,8 +169,7 @@ def main():
     # ------------------------------------------------------------------
     prefill = pte("t3_prefill.pte")
     print("3) T3 prefill")
-    ce16 = ce.to(torch.float16)
-    pref = run(prefill, ce16, text_t)
+    pref = run(prefill, ce, text_t)
     logits = pref[0].float()
     kv_flat = pref[1]
     assert_shape(logits, (1, SPEECH_VOCAB), "prefill logits")
