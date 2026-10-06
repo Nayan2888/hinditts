@@ -112,13 +112,13 @@ class ChatterboxTTS(private val context: Context) {
 
         // Pad/truncate to exactly 256 positions, then wrap with SOT=255 and EOT=0
         // Total: 1 SOT + 256 tokens + 1 EOT = 258
-        val textSeq = LongArray(Constants.TEXT_SEQ_LEN) { 0L }  // default padding = EOT
-        textSeq[0] = Constants.SOT_TEXT.toLong()
+        val textSeq = IntArray(Constants.TEXT_SEQ_LEN) { 0 }  // default padding = EOT
+        textSeq[0] = Constants.SOT_TEXT
         val copyLen = minOf(rawTokenIds.size, Constants.MAX_TEXT_LEN)
         for (i in 0 until copyLen) {
-            textSeq[1 + i] = rawTokenIds[i].toLong()
+            textSeq[1 + i] = rawTokenIds[i]
         }
-        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT.toLong()
+        textSeq[Constants.TEXT_SEQ_LEN - 1] = Constants.EOT_TEXT
 
         val textTensor = Tensor.fromBlob(textSeq, longArrayOf(1, Constants.TEXT_SEQ_LEN.toLong()))
 
